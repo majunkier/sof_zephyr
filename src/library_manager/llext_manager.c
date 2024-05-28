@@ -150,27 +150,11 @@ static int llext_manager_load_module(uint32_t module_id, const struct sof_man_mo
 	if (ret < 0)
 		return ret;
 
-	/* Copy read-only data */
+	/* Copy RODATA */
 	ret = llext_manager_load_data_from_storage(va_base_rodata, src_rodata,
 						   rodata_size, 0);
 	if (ret < 0)
-		goto e_text;
-
-	/* Copy writable data */
-	ret = llext_manager_load_data_from_storage(va_base_data, src_data,
-						   data_size, SYS_MM_MEM_PERM_RW);
-	if (ret < 0)
-		goto e_rodata;
-
-	memset((__sparse_force void *)ctx->segment[LIB_MANAGER_BSS].addr, 0,
-	       ctx->segment[LIB_MANAGER_BSS].size);
-
-	return 0;
-
-e_rodata:
-	llext_manager_align_unmap(va_base_rodata, rodata_size);
-e_text:
-	llext_manager_align_unmap(va_base_text, text_size);
+		llext_manager_align_unmap(va_base_text, st_text_size);
 
 	return ret;
 }
