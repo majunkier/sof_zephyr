@@ -137,21 +137,11 @@ static int llext_manager_load_module(uint32_t module_id, const struct sof_man_mo
 
 	/* Check, that .bss is within .data */
 	if (bss_size &&
-	    ((uintptr_t)bss_addr + bss_size <= (uintptr_t)va_base_data ||
+	    ((uintptr_t)bss_addr + bss_size < (uintptr_t)va_base_data ||
 	     (uintptr_t)bss_addr >= (uintptr_t)va_base_data + data_size)) {
-		if ((uintptr_t)bss_addr + bss_size == (uintptr_t)va_base_data &&
-		    !((uintptr_t)bss_addr & (PAGE_SZ - 1))) {
-			/* .bss directly in front of writable data and properly aligned, prepend */
-			va_base_data = bss_addr;
-			data_size += bss_size;
-		} else if ((uintptr_t)bss_addr == (uintptr_t)va_base_data + data_size) {
-			/* .bss directly behind writable data, append */
-			data_size += bss_size;
-		} else {
-			tr_err(&lib_manager_tr, ".bss %#x @ %p isn't within writable data %#x @ %p!",
-			       bss_size, bss_addr, data_size, (void *)va_base_data);
-			return -EPROTO;
-		}
+		tr_err(&lib_manager_tr, ".bss %#x @ %p isn't within writable data %#x @ %p!",
+		       bss_size, bss_addr, data_size, (void *)va_base_data);
+		return -EPROTO;
 	}
 
 	/* Copy Code */
@@ -172,7 +162,8 @@ static int llext_manager_load_module(uint32_t module_id, const struct sof_man_mo
 	if (ret < 0)
 		goto e_rodata;
 
-	memset((__sparse_force void *)bss_addr, 0, bss_size);
+	memset((__sparse_force void *)ctx->segment[LIB_MANAGER_BSS].addr, 0,
+	       ctx->segment[LIB_MANAGER_BSS].size);
 
 	return 0;
 
@@ -199,23 +190,19 @@ static int llext_manager_unload_module(uint32_t module_id, const struct sof_man_
 
 	/* Writable data (.data, .bss, etc.) */
 	void __sparse_cache *va_base_data = (void __sparse_cache *)
-		ctx->segment[LIB_MANAGER_DATA].addr;
-	size_t data_size = ctx->segment[LIB_MANAGER_DATA].size;
-	int err = 0, ret;
+		ctx->segment[LIB_MANAGER_RODATA].addr;
+	size_t data_size = ctx->segment[LIB_MANAGER_RODATA].size;
+	int ret;
 
 	ret = llext_manager_align_unmap(va_base_text, text_size);
 	if (ret < 0)
 		err = ret;
 
 	ret = llext_manager_align_unmap(va_base_data, data_size);
-	if (ret < 0 && !err)
-		err = ret;
+	if (ret < 0)
+		return ret;
 
-	ret = llext_manager_align_unmap(va_base_rodata, rodata_size);
-	if (ret < 0 && !err)
-		err = ret;
-
-	return err;
+	return llext_manager_align_unmap(va_base_rodata, rodata_size);
 }
 
 static int llext_manager_link(struct sof_man_fw_desc *desc, struct sof_man_module *mod,
@@ -287,7 +274,7 @@ static int llext_manager_link(struct sof_man_fw_desc *desc, struct sof_man_modul
 	if (mod_o >= 0)
 		*mod_manifest = llext_peek(&ebl.loader, mod_o);
 
-	return binfo_o >= 0 && mod_o >= 0 ? 0 : -EPROTO;
+	return binfo_o && mod_o ? 0 : -EPROTO;
 }
 
 uintptr_t llext_manager_allocate_module(struct processing_module *proc,
