@@ -317,20 +317,21 @@ uintptr_t llext_manager_allocate_module(struct processing_module *proc,
 			return -ENOEXEC;
 		}
 
-		/* Map executable code and data */
+		/* ctx->mod_manifest points to the array of module manifests */
+		ctx->mod_manifest = mod_manifest;
+
+		/* Map .text and the rest as .data */
 		ret = llext_manager_load_module(module_id, mod_array);
 		if (ret < 0)
 			return 0;
 
-		/* Manifest is in read-only data */
-		uintptr_t imr_rodata = (uintptr_t)ctx->base_addr +
-			ctx->segment[LIB_MANAGER_RODATA].file_offset;
-		uintptr_t va_rodata_base = ctx->segment[LIB_MANAGER_RODATA].addr;
-		size_t offset = (uintptr_t)mod_manifest - imr_rodata;
-
-		/* ctx->mod_manifest points to an array of module manifests */
-		ctx->mod_manifest = (const struct sof_man_module_manifest *)(va_rodata_base +
-									     offset);
+		ret = llext_manager_allocate_module_bss(module_id, mod_array);
+		if (ret < 0) {
+			tr_err(&lib_manager_tr,
+			       "llext_manager_allocate_module(): module allocation failed: %d",
+			       ret);
+			return 0;
+		}
 	}
 
 	return ctx->mod_manifest[entry_index].module.entry_point;
