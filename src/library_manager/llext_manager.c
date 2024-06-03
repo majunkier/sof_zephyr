@@ -148,9 +148,8 @@ static int llext_manager_load_module(uint32_t module_id, const struct sof_man_mo
 			/* .bss directly behind writable data, append */
 			data_size += bss_size;
 		} else {
-			tr_err(&lib_manager_tr, ".bss %#x @%p isn't within writable data %#x @%p!",
-			       bss_size, (__sparse_force void *)bss_addr,
-			       data_size, (__sparse_force void *)va_base_data);
+			tr_err(&lib_manager_tr, ".bss %#x @ %p isn't within writable data %#x @ %p!",
+			       bss_size, bss_addr, data_size, (void *)va_base_data);
 			return -EPROTO;
 		}
 	}
