@@ -137,11 +137,21 @@ static int llext_manager_load_module(uint32_t module_id, const struct sof_man_mo
 
 	/* Check, that .bss is within .data */
 	if (bss_size &&
-	    ((uintptr_t)bss_addr + bss_size < (uintptr_t)va_base_data ||
+	    ((uintptr_t)bss_addr + bss_size <= (uintptr_t)va_base_data ||
 	     (uintptr_t)bss_addr >= (uintptr_t)va_base_data + data_size)) {
-		tr_err(&lib_manager_tr, ".bss %#x @ %p isn't within writable data %#x @ %p!",
-		       bss_size, bss_addr, data_size, (void *)va_base_data);
-		return -EPROTO;
+		if ((uintptr_t)bss_addr + bss_size == (uintptr_t)va_base_data &&
+		    !((uintptr_t)bss_addr & (PAGE_SZ - 1))) {
+			/* .bss directly in front of writable data and properly aligned, prepend */
+			va_base_data = bss_addr;
+			data_size += bss_size;
+		} else if ((uintptr_t)bss_addr == (uintptr_t)va_base_data + data_size) {
+			/* .bss directly behind writable data, append */
+			data_size += bss_size;
+		} else {
+			tr_err(&lib_manager_tr, ".bss %#x @ %p isn't within writable data %#x @ %p!",
+			       bss_size, bss_addr, data_size, (void *)va_base_data);
+			return -EPROTO;
+		}
 	}
 
 	/* Copy Code */
@@ -150,11 +160,26 @@ static int llext_manager_load_module(uint32_t module_id, const struct sof_man_mo
 	if (ret < 0)
 		return ret;
 
-	/* Copy RODATA */
+	/* Copy read-only data */
 	ret = llext_manager_load_data_from_storage(va_base_rodata, src_rodata,
 						   rodata_size, 0);
 	if (ret < 0)
-		llext_manager_align_unmap(va_base_text, st_text_size);
+		goto e_text;
+
+	/* Copy writable data */
+	ret = llext_manager_load_data_from_storage(va_base_data, src_data,
+						   data_size, SYS_MM_MEM_PERM_RW);
+	if (ret < 0)
+		goto e_rodata;
+
+	memset((__sparse_force void *)bss_addr, 0, bss_size);
+
+	return 0;
+
+e_rodata:
+	llext_manager_align_unmap(va_base_rodata, rodata_size);
+e_text:
+	llext_manager_align_unmap(va_base_text, text_size);
 
 	return ret;
 }
@@ -180,7 +205,7 @@ static int llext_manager_unload_module(uint32_t module_id, const struct sof_man_
 
 	ret = llext_manager_align_unmap(va_base_text, text_size);
 	if (ret < 0)
-		err = ret;
+		return ret;
 
 	ret = llext_manager_align_unmap(va_base_data, data_size);
 	if (ret < 0)
@@ -250,12 +275,12 @@ static int llext_manager_link(struct sof_man_fw_desc *desc, struct sof_man_modul
 
 	ssize_t binfo_o = llext_find_section(&ebl.loader, ".mod_buildinfo");
 
-	if (binfo_o >= 0)
+	if (binfo_o)
 		*buildinfo = llext_peek(&ebl.loader, binfo_o);
 
 	ssize_t mod_o = llext_find_section(&ebl.loader, ".module");
 
-	if (mod_o >= 0)
+	if (mod_o)
 		*mod_manifest = llext_peek(&ebl.loader, mod_o);
 
 	return binfo_o && mod_o ? 0 : -EPROTO;
@@ -301,21 +326,20 @@ uintptr_t llext_manager_allocate_module(struct processing_module *proc,
 			return -ENOEXEC;
 		}
 
-		/* ctx->mod_manifest points to the array of module manifests */
-		ctx->mod_manifest = mod_manifest;
-
-		/* Map .text and the rest as .data */
+		/* Map executable code and data */
 		ret = llext_manager_load_module(module_id, mod_array);
 		if (ret < 0)
 			return 0;
 
-		ret = llext_manager_allocate_module_bss(module_id, mod_array);
-		if (ret < 0) {
-			tr_err(&lib_manager_tr,
-			       "llext_manager_allocate_module(): module allocation failed: %d",
-			       ret);
-			return 0;
-		}
+		/* Manifest is in read-only data */
+		uintptr_t imr_rodata = (uintptr_t)ctx->base_addr +
+			ctx->segment[LIB_MANAGER_RODATA].file_offset;
+		uintptr_t va_rodata_base = ctx->segment[LIB_MANAGER_RODATA].addr;
+		size_t offset = (uintptr_t)mod_manifest - imr_rodata;
+
+		/* ctx->mod_manifest points to an array of module manifests */
+		ctx->mod_manifest = (const struct sof_man_module_manifest *)(va_rodata_base +
+									     offset);
 	}
 
 	return ctx->mod_manifest[entry_index].module.entry_point;
